@@ -31,6 +31,27 @@ class ImageSave {
     return success;
   }
 
+  /// Save video to album.
+  /// [videoPath] The path for original video file.
+  /// [videoName] Only works on Android. Video name.
+  /// [albumName] Album name, optional. For Android, default application name. For iOS, default system album.
+  /// [overwriteSameNameFile] Only works on Android. If <code>true</code>, overwrite the original file that has same name, default <code>true</code>.
+  static Future<bool?> saveVideo(String? videoPath, String videoName,
+    {String? albumName, overwriteSameNameFile = true}) async {
+    bool? success = false;
+    try {
+      success = await _channel.invokeMethod('saveVideo', {
+        'videoPath': videoPath,
+        'videoName': videoName,
+        'albumName': albumName,
+        'overwriteSameNameFile': overwriteSameNameFile
+      });
+    } on PlatformException {
+      rethrow;
+    }
+    return success;
+  }
+
   /// Save Image to Sandbox.
   /// <b>Notice: Image saved in this way will be deleted when the application is uninstalled.</b>
   /// For Android, the full path is <code>/storage/emulated/0/Android/data/${application_package_name}/files/Pictures/[imageName]</code>.

@@ -32,6 +32,28 @@
             FlutterError *error = [FlutterError errorWithCode:@"0" message:@"Permission denied" details:nil];
             result(error);
         }
+    } else if ([@"saveVideo" isEqualToString:call.method]) {
+      NSString *videoName = call.arguments[@"videoName"];
+      NSString *albumName = call.arguments[@"albumName"];
+      NSString *videoPath = call.arguments[@"videoPath"];
+      BOOL overwriteFile = call.arguments[@"overwriteSameNameFile"];
+      PHAuthorizationStatus authorizationStatus = [PHPhotoLibrary authorizationStatus];
+      NSURL *videoUrl = [NSURL fileURLWithPath:videoPath];
+      if (authorizationStatus == PHAuthorizationStatusAuthorized) {
+        [self saveVideoWithVideoName:videoName videoUrl:videoUrl albumName:albumName overwriteFile:overwriteFile result:result];
+      } else if (authorizationStatus == PHAuthorizationStatusNotDetermined) {
+        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+            if (status == PHAuthorizationStatusAuthorized) {
+              [self saveVideoWithVideoName:videoName videoUrl:videoUrl albumName:albumName overwriteFile:overwriteFile result:result];
+            }else{
+              FlutterError *error = [FlutterError errorWithCode:@"0" message:@"Permission denied" details:nil];
+              result(error);
+            }
+        }];
+      } else if(authorizationStatus == PHAuthorizationStatusDenied){
+        FlutterError *error = [FlutterError errorWithCode:@"0" message:@"Permission denied" details:nil];
+        result(error);
+      }
     } else if([@"saveImageToSandbox" isEqualToString:call.method]){
         FlutterStandardTypedData *data = call.arguments[@"imageData"];
         NSString *imageName = call.arguments[@"imageName"];
@@ -116,6 +138,43 @@
             result(@NO);
         }
     }];
+}
+
+-(void)saveVideoWithVideoName:(NSString*)videoName videoUrl:(NSURL*)videoUrl albumName:(NSString *)albumName overwriteFile:(BOOL)overwriteFile result:(FlutterResult)result {
+  __block NSString* localId;
+  [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+      PHAssetCreationRequest *assetChangeRequest = [PHAssetCreationRequest creationRequestForAsset];
+      PHAssetResourceCreationOptions *options = [[PHAssetResourceCreationOptions alloc] init];
+      options.originalFilename = videoName;
+      options.shouldMoveFile = overwriteFile;
+      [assetChangeRequest addResourceWithType:PHAssetResourceTypeVideo fileURL:videoUrl options:options];
+      PHObjectPlaceholder *placeholder = [assetChangeRequest placeholderForCreatedAsset];
+      localId = placeholder.localIdentifier;
+      if(![albumName isEqual:[NSNull null]]){
+        PHAssetCollectionChangeRequest *collectionRequest;
+        PHAssetCollection *assetCollection = [self getCurrentPhotoCollectionWithTitle:albumName];
+        if (assetCollection) {
+          collectionRequest = [PHAssetCollectionChangeRequest changeRequestForAssetCollection:assetCollection];
+        } else {
+          collectionRequest = [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:albumName];
+        }
+        [collectionRequest addAssets:@[placeholder]];
+      }
+  } completionHandler:^(BOOL success, NSError *error) {
+      if(error !=  nil){
+        result([FlutterError errorWithCode:[NSString stringWithFormat:@"%ld",error.code] message:error.description details:error.localizedFailureReason]);
+        return;
+      }
+      if (success) {
+        PHFetchResult* assetResult = [PHAsset fetchAssetsWithLocalIdentifiers:@[localId] options:nil];
+        PHAsset *asset = [assetResult firstObject];
+        [asset requestContentEditingInputWithOptions:nil completionHandler:^(PHContentEditingInput * _Nullable contentEditingInput, NSDictionary * _Nonnull info) {
+            result(@YES);
+        }];
+      } else {
+        result(@NO);
+      }
+  }];
 }
 
 - (PHAssetCollection *)getCurrentPhotoCollectionWithTitle:(NSString *)collectionName {

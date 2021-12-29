@@ -13,6 +13,8 @@ import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.provider.MediaStore;
 import android.text.TextUtils;
 
@@ -23,6 +25,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLConnection;
 import java.util.ArrayList;
@@ -48,11 +51,18 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
     private MethodChannel channel;
     private ActivityPluginBinding activityPluginBinding;
 
+    /** A {@link Handler} for running tasks in the background. */
+    private Handler backgroundHandler;
+
+    /** An additional thread for running tasks that shouldn't block the UI. */
+    private HandlerThread backgroundHandlerThread;
+
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
         this.applicationContext = flutterPluginBinding.getApplicationContext();
         channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "image_save");
         channel.setMethodCallHandler(this);
+        startBackgroundThread();
     }
 
     @Override
@@ -60,21 +70,51 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
         applicationContext = null;
         channel.setMethodCallHandler(null);
         channel = null;
+        stopBackgroundThread();
+    }
+
+    /** Starts a background thread and its {@link Handler}. */
+    private void startBackgroundThread() {
+        if (backgroundHandlerThread != null) {
+            return;
+        }
+
+        backgroundHandlerThread = new HandlerThread("ImageSaveBackground");
+        try {
+            backgroundHandlerThread.start();
+        } catch (IllegalThreadStateException e) {
+            // Ignore exception in case the thread has already started.
+        }
+        backgroundHandler = new Handler(backgroundHandlerThread.getLooper());
+    }
+
+    /** Stops the background thread and its {@link Handler}. */
+    public void stopBackgroundThread() {
+        if (backgroundHandlerThread != null) {
+            backgroundHandlerThread.quitSafely();
+        }
+        backgroundHandlerThread = null;
+        backgroundHandler = null;
     }
 
     @Override
-    public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
+    public void onMethodCall(@NonNull final MethodCall call, @NonNull Result result) {
         this.call = call;
-        this.result = result;
+        this.result = new ThreadSafeResult(result);
         if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
-            methodCall(call, result);
+            backgroundHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    methodCall(call);
+                }
+            });
         } else {
             ActivityCompat.requestPermissions(activityPluginBinding.getActivity(), new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_CODE);
             activityPluginBinding.addRequestPermissionsResultListener(this);
         }
     }
 
-    private void methodCall(MethodCall call, Result result) {
+    private void methodCall(MethodCall call) {
         byte[] data = call.argument("imageData");
         String imageName = call.argument("imageName");
         String albumName = call.argument("albumName");
@@ -88,6 +128,11 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
                 break;
             case "getImagesFromSandbox":
                 getImagesFromSandboxCall();
+                break;
+            case "saveVideo":
+                final String videoPath = call.argument("videoPath");
+                final String videoName = call.argument("videoName");
+                saveVideoCall(videoPath, videoName, albumName, overwriteSameNameFile);
                 break;
             default:
                 result.notImplemented();
@@ -158,6 +203,84 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
         return false;
     }
 
+    private void saveVideoCall(String videoPath, String videoName, String albumName, Boolean overwrite) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // For Android 10
+            ContentResolver resolver = applicationContext.getContentResolver();
+            Uri contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+            ContentValues contentValues = new ContentValues();
+            String displayName = contentValues.getAsString(MediaStore.Video.Media.DISPLAY_NAME);
+            if (TextUtils.equals(displayName, videoName)) {
+                result.error("2", "Duplicate image name", "The file '" + videoName + "' already exists");
+            }
+            contentValues.put(MediaStore.Video.Media.DISPLAY_NAME, videoName);
+            contentValues.put(MediaStore.Video.Media.MIME_TYPE, URLConnection.getFileNameMap().getContentTypeFor(videoName));
+            contentValues.put(MediaStore.Video.Media.RELATIVE_PATH, DIRECTORY_PICTURES + "/" + albumName);
+            Uri uri = resolver.insert(contentUri, contentValues);
+            if (uri == null) {
+                result.error("2", "File not found", "The file '" + videoName + "' saves failed");
+                return;
+            }
+            try {
+                InputStream is = new FileInputStream(new File(videoPath));
+                OutputStream os = resolver.openOutputStream(uri);
+
+                byte[] buf = new byte[1024];
+                int len;
+                while ((len = is.read(buf)) > 0) {
+                    os.write(buf, 0, len);
+                }
+
+                os.flush();
+                os.close();
+                is.close();
+                result.success(true);
+            } catch (IOException e) {
+                result.error("2", e.getMessage(), "The file '" + videoName + "' saves failed");
+            }
+            MediaScannerConnection.scanFile(applicationContext, new String[]{contentUri.getPath()}, new String[]{"videos/*"}, null);
+        } else {
+            try {
+                result.success(saveVideo(videoPath, videoName, albumName, overwrite));
+            } catch (IOException e) {
+                result.error("2", e.getMessage(), "The file '" + videoName + "' already exists");
+            }
+        }
+    }
+
+    private Boolean saveVideo(String videoPath, String videoName, String albumName, Boolean overwriteSameNameFile) throws IOException {
+        if (albumName == null) {
+            albumName = getApplicationName();
+        }
+        File parentDir = new File(Environment.getExternalStoragePublicDirectory(DIRECTORY_PICTURES), albumName);
+        if (!parentDir.exists()) {
+            parentDir.mkdir();
+        }
+        File file = new File(parentDir, videoName);
+        if (!overwriteSameNameFile) {
+            if (file.exists()) {
+                throw new IOException("File already exists");
+            }
+        }
+        try {
+            InputStream is = new FileInputStream(new File(videoPath));
+            FileOutputStream fos = new FileOutputStream(file);
+
+            byte[] buf = new byte[1024];
+            int len;
+            while ((len = is.read(buf)) > 0) {
+                fos.write(buf, 0, len);
+            }
+
+            fos.close();
+            is.close();
+            applicationContext.sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file.getAbsoluteFile())));
+            return true;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
 
     private void saveImageToSandboxCall(byte[] data, String imageName) {
         saveImageToSandbox(data, imageName);
@@ -260,7 +383,12 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
     public boolean onRequestPermissionsResult(int i, String[] strings, int[] grantResults) {
         boolean granted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
         if (granted) {
-            methodCall(call, result);
+            backgroundHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    methodCall(call);
+                }
+            });
         } else {
             result.error("0", "Permission denied", null);
         }

@@ -22,7 +22,9 @@ class ThreadSafeResult implements Result {
         handler.post(new Runnable() {
             @Override
             public void run() {
+              try {
                 result.success(obj);
+              } catch (Exception ignored) {}
             }
         });
     }
@@ -32,7 +34,9 @@ class ThreadSafeResult implements Result {
         handler.post(new Runnable() {
             @Override
             public void run() {
+              try {
                 result.error(errorCode, errorMessage, errorDetails);
+              } catch (Exception ignored) {}
             }
         });
     }

@@ -1,5 +1,6 @@
 package com.samoy.image_save;
 
+import static android.os.Environment.DIRECTORY_MOVIES;
 import static android.os.Environment.DIRECTORY_PICTURES;
 
 import android.Manifest;
@@ -211,11 +212,11 @@ public class ImageSavePlugin implements MethodCallHandler, FlutterPlugin, Activi
             ContentValues contentValues = new ContentValues();
             String displayName = contentValues.getAsString(MediaStore.Video.Media.DISPLAY_NAME);
             if (TextUtils.equals(displayName, videoName)) {
-                result.error("2", "Duplicate image name", "The file '" + videoName + "' already exists");
+                result.error("2", "Duplicate video name", "The file '" + videoName + "' already exists");
             }
             contentValues.put(MediaStore.Video.Media.DISPLAY_NAME, videoName);
             contentValues.put(MediaStore.Video.Media.MIME_TYPE, URLConnection.getFileNameMap().getContentTypeFor(videoName));
-            contentValues.put(MediaStore.Video.Media.RELATIVE_PATH, DIRECTORY_PICTURES + "/" + albumName);
+            contentValues.put(MediaStore.Video.Media.RELATIVE_PATH, DIRECTORY_MOVIES + "/" + albumName);
             Uri uri = resolver.insert(contentUri, contentValues);
             if (uri == null) {
                 result.error("2", "File not found", "The file '" + videoName + "' saves failed");
